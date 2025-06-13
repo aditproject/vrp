@@ -1,0 +1,334 @@
+!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dasbor Optimasi Pengiriman</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #map { height: 100%; width: 100%; border-radius: 0.5rem; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-7xl">
+        <header class="text-center mb-8">
+            <div class="flex justify-between items-center">
+                <h1 id="welcome-message" class="text-xl font-semibold text-left">Memuat...</h1>
+                <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Dasbor Optimasi Pengiriman</h1>
+                <button id="logout-btn" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded text-sm">Logout</button>
+            </div>
+        </header>
+        
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-1 bg-white p-6 rounded-lg shadow-lg flex flex-col">
+                <div>
+                    <div class="p-4 border border-gray-200 rounded-lg mb-6">
+                        <h3 class="text-lg font-semibold mb-3">Jadwal Pengiriman Saya</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label for="date-filter" class="block text-sm font-medium text-gray-700">Pilih Tanggal</label>
+                                <input type="date" id="date-filter" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                            </div>
+                            <button id="load-data-btn" class="w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700">
+                                Muat Jadwal Saya
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Tombol rekap historis bisa ditambahkan kembali di sini jika perlu -->
+
+                    <h2 class="text-xl font-bold mb-4">Ringkasan Pengiriman</h2>
+                    <div id="data-summary" class="text-sm space-y-2">
+                        <p>Pilih tanggal dan klik "Muat Jadwal".</p>
+                    </div>
+
+                    <div class="mt-8">
+                        <button id="optimize-btn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-md hover:bg-blue-700" disabled>
+                            Hitung Rute Optimal
+                        </button>
+                    </div>
+                </div>
+
+                <div id="results-container" class="mt-8 flex-grow hidden">
+                     <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">Hasil Optimasi Rute</h2>
+                        <button id="export-optimization-btn" class="bg-green-500 text-white font-bold py-1 px-3 rounded-md hover:bg-green-600 text-sm hidden">
+                            Export Hasil Ini
+                        </button>
+                    </div>
+                    <div id="spinner" class="hidden flex items-center justify-center my-4">
+                        <svg class="animate-spin h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                        <span class="ml-3 text-gray-600">Menghubungi server...</span>
+                    </div>
+                    <div id="optimized-routes" class="space-y-6"></div>
+                </div>
+                 <div id="error-message" class="mt-4 text-red-600 font-medium hidden"></div>
+            </div>
+
+            <div class="lg:col-span-2 bg-white rounded-lg shadow-lg min-h-[500px] lg:min-h-[700px]">
+                 <div id="map"></div>
+            </div>
+        </div>
+    </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // --- Variabel Elemen ---
+    const welcomeMessage = document.getElementById('welcome-message');
+    const logoutBtn = document.getElementById('logout-btn');
+    const loadDataBtn = document.getElementById('load-data-btn');
+    const dateFilter = document.getElementById('date-filter');
+    const optimizeBtn = document.getElementById('optimize-btn');
+    const dataSummary = document.getElementById('data-summary');
+    const resultsContainer = document.getElementById('results-container');
+    const spinner = document.getElementById('spinner');
+    const optimizedRoutesContainer = document.getElementById('optimized-routes');
+    const errorMessage = document.getElementById('error-message');
+    const exportOptimizationBtn = document.getElementById('export-optimization-btn');
+    
+    const orsApiKey = '5b3ce3597851110001cf6248106a71c6bd3847d29b47a215f0d6e3af';
+    const map = L.map('map').setView([-7.1, 110.45], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    const markersLayer = L.layerGroup().addTo(map);
+    const routesLayer = L.layerGroup().addTo(map);
+
+    let shipmentsData = null;
+    let lastSolution = null;
+
+    // --- Logika Utama ---
+    async function checkSession() {
+        try {
+            const response = await fetch('/api/session');
+            if (!response.ok) throw new Error("Sesi tidak valid");
+            const data = await response.json();
+            welcomeMessage.textContent = `Selamat datang, ${data.driver_name}!`;
+            dateFilter.value = new Date().toISOString().split('T')[0];
+            await loadAndDisplayShipments();
+        } catch (error) {
+            window.location.href = '/login.html';
+        }
+    }
+
+    async function loadAndDisplayShipments() {
+        const selectedDate = dateFilter.value;
+        if (!selectedDate) { showError("Silakan pilih tanggal."); return; }
+        resetUI();
+        dataSummary.innerHTML = '<p>Memuat jadwal...</p>';
+        optimizeBtn.disabled = true;
+        try {
+            const response = await fetch(`/api/shipments?date=${selectedDate}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Gagal memuat data.');
+            shipmentsData = data;
+            updateDashboard(data);
+        } catch (error) {
+            showError(error.message);
+            dataSummary.innerHTML = `<p class="text-red-500">${error.message}</p>`;
+        }
+    }
+
+    async function calculateOptimalRoutes() {
+        if (!shipmentsData || shipmentsData.shipments.length === 0) return;
+        resetUIForOptimization();
+        showSpinner(true);
+        resultsContainer.classList.remove('hidden');
+        try {
+            const response = await fetch('/api/solve-vrp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(shipmentsData),
+            });
+            const solution = await response.json();
+            if (!response.ok) throw new Error(solution.error || solution.details || 'Gagal menghitung rute.');
+            lastSolution = solution;
+            await displaySolution(solution);
+        } catch (error) {
+            showError(`Gagal menghitung rute: ${error.message}`);
+        } finally {
+            showSpinner(false);
+        }
+    }
+    
+    // --- Fungsi Tampilan ---
+    function updateDashboard(data) {
+        displayDataSummary(data);
+        displayInitialMarkers(data);
+        optimizeBtn.disabled = !data || !data.shipments || data.shipments.length === 0;
+    }
+
+    function displayDataSummary(data) {
+        const customerCount = data.shipments ? data.shipments.length : 0;
+        if (customerCount === 0) {
+            dataSummary.innerHTML = '<p>Tidak ada jadwal pengiriman untuk tanggal ini.</p>';
+            return;
+        }
+        const totalSales = data.shipments.reduce((sum, loc) => sum + parseFloat(loc.sales_value), 0);
+        const totalDemand = data.shipments.reduce((sum, loc) => sum + parseInt(loc.demand), 0);
+        dataSummary.innerHTML = `
+            <p><span class="font-semibold">Jumlah Pengiriman:</span> ${customerCount} toko</p>
+            <p><span class="font-semibold">Total Muatan:</span> ${totalDemand} boks</p>
+            <p><span class="font-semibold">Total Penjualan:</span> Rp ${new Intl.NumberFormat('id-ID').format(totalSales)}</p>
+        `;
+    }
+
+    function displayInitialMarkers(data) {
+        markersLayer.clearLayers();
+        routesLayer.clearLayers();
+        const bounds = [];
+        if (data.depot) {
+            L.marker([data.depot.lat, data.depot.lon]).bindPopup(`<b>${data.depot.point_name}</b>`).addTo(markersLayer);
+            bounds.push([data.depot.lat, data.depot.lon]);
+        }
+        if (data.shipments && data.shipments.length > 0) {
+            data.shipments.forEach(loc => {
+                L.marker([loc.lat, loc.lon]).bindPopup(`<b>${loc.point_name}</b>`).addTo(markersLayer);
+                bounds.push([loc.lat, loc.lon]);
+            });
+            if (bounds.length > 0) map.fitBounds(bounds, { padding: [50, 50] });
+        }
+    }
+    
+    async function displaySolution(solution) {
+        if (!solution.routes || solution.routes.length === 0) {
+             optimizedRoutesContainer.innerHTML = '<p class="text-center">Tidak ada rute yang dihasilkan.</p>';
+            return;
+        }
+        exportOptimizationBtn.classList.remove('hidden');
+        
+        solution.routes.forEach(async (route, index) => {
+            const color = '#3b82f6';
+            
+            const routeCard = document.createElement('div');
+            routeCard.className = 'border-l-4 p-4 rounded-r-lg bg-gray-50 mb-4';
+            routeCard.style.borderColor = color;
+            
+            let routeDetailsHtml = `<h3 class="font-bold text-lg" style="color:${color};">${route.vehicle_name}</h3>`;
+            
+            if (route.analysis && route.analysis.time && route.analysis.sales) {
+                let timeBadgeColor = route.analysis.time.status === 'Tepat Waktu' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800';
+                routeDetailsHtml += `<div class="my-2 p-2 rounded-md ${timeBadgeColor}">
+                                        <p class="font-semibold text-xs">Analisis Waktu: ${route.analysis.time.status}</p>
+                                        <p class="text-xs">${route.analysis.time.message}</p>
+                                     </div>`;
+
+                let salesBadgeColor = 'bg-green-100 text-green-800';
+                if (route.analysis.sales.status === 'Kurang Efisien') salesBadgeColor = 'bg-yellow-100 text-yellow-800';
+                else if (route.analysis.sales.status === 'Tidak Efisien') salesBadgeColor = 'bg-red-100 text-red-800';
+                routeDetailsHtml += `<div class="p-2 rounded-md ${salesBadgeColor}">
+                                        <p class="font-semibold text-xs">Analisis Penjualan: ${route.analysis.sales.status}</p>
+                                        <p class="text-xs">${route.analysis.sales.message}</p>
+                                     </div>`;
+            }
+            
+            const durationHours = Math.floor(route.estimated_duration / 3600);
+            const durationMinutes = Math.floor((route.estimated_duration % 3600) / 60);
+
+            routeDetailsHtml += `<div class="mt-3 space-y-1">
+                    <p class="text-sm font-medium">Total Muatan: ${route.total_load} / ${route.vehicle_capacity} boks</p>
+                    <p class="text-sm font-medium">Total Penjualan: Rp ${new Intl.NumberFormat('id-ID').format(route.total_sales)}</p>
+                    <p class="text-sm font-medium">Estimasi Jarak: ${route.total_distance.toFixed(2)} km</p>
+                    <p class="text-sm font-medium">Estimasi Durasi: ${durationHours} jam ${durationMinutes} menit</p>
+                </div>
+                <ol class="list-decimal list-inside mt-2 text-sm space-y-1">`;
+            
+            route.path_stops.forEach(stop => {
+                let stopName = stop.is_depot ? `<b>${stop.point_name}</b>` : `${stop.point_name}`;
+                routeDetailsHtml += `<li>${stopName}</li>`;
+            });
+            routeDetailsHtml += `</ol>`;
+            routeCard.innerHTML = routeDetailsHtml;
+            optimizedRoutesContainer.appendChild(routeCard);
+
+            fetchRouteShape(route.path_stops, color);
+        });
+    }
+
+    async function fetchRouteShape(stops, color) {
+        const orsCoordinates = stops.map(stop => [stop.lon, stop.lat]);
+        if (orsCoordinates.length < 2) return;
+        try {
+            const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+                method: 'POST',
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': orsApiKey },
+                body: JSON.stringify({ coordinates: orsCoordinates })
+            });
+            if (!response.ok) return;
+            const data = await response.json();
+            const leafletPath = data.features[0].geometry.coordinates.map(p => [p[1], p[0]]);
+            L.polyline(leafletPath, { color, weight: 5, opacity: 0.8 }).addTo(routesLayer);
+        } catch (error) {
+            console.error('ORS fetch shape error:', error);
+        }
+    }
+    
+    // --- Fungsi Helper ---
+    function resetUI() {
+        routesLayer.clearLayers();
+        markersLayer.clearLayers();
+        optimizedRoutesContainer.innerHTML = '';
+        resultsContainer.classList.add('hidden');
+        errorMessage.classList.add('hidden');
+        exportOptimizationBtn.classList.add('hidden');
+    }
+    function resetUIForOptimization() {
+        routesLayer.clearLayers();
+        optimizedRoutesContainer.innerHTML = '';
+        errorMessage.classList.add('hidden');
+    }
+    function showSpinner(show) { spinner.style.display = show ? 'flex' : 'none'; }
+    function showError(message) { errorMessage.textContent = message; errorMessage.classList.remove('hidden'); }
+    
+    function exportOptimizedRoutesToExcel() {
+        if (!lastSolution || !lastSolution.routes || lastSolution.routes.length === 0) return alert("Tidak ada data untuk di-export.");
+        const dataForExport = [];
+        lastSolution.routes.forEach(route => {
+            const stops = route.path_stops.slice(1, -1);
+            stops.forEach((stop, index) => {
+                dataForExport.push({
+                    "Supir": route.vehicle_name.split(' - ')[0],
+                    "Kendaraan": route.vehicle_name.split(' - ')[1],
+                    "Trip": (route.vehicle_name.match(/\(Trip (\d+)\)/) || [,'N/A'])[1],
+                    "Urutan": index + 1,
+                    "Toko": stop.point_name,
+                    "Muatan Trip (Boks)": route.total_load,
+                    "Jarak Trip (KM)": route.total_distance.toFixed(2),
+                    "Penjualan Trip (Rp)": route.total_sales,
+                    "Status Waktu": route.analysis?.time?.status || 'N/A',
+                    "Status Penjualan": route.analysis?.sales?.status || 'N/A'
+                });
+            });
+        });
+        exportTableToExcel(dataForExport, 'Hasil_Optimasi_Rute.xlsx');
+    }
+    function exportTableToExcel(jsonData, fileName) {
+        if(!jsonData || jsonData.length === 0) return alert("Tidak ada data untuk di-export.");
+        const worksheet = XLSX.utils.json_to_sheet(jsonData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Laporan");
+        XLSX.writeFile(workbook, fileName || "Laporan.xlsx");
+    }
+
+    // --- Event Listeners ---
+    logoutBtn.addEventListener('click', async () => {
+        await fetch('/api/logout');
+        window.location.href = '/login.html';
+    });
+    loadDataBtn.addEventListener('click', loadAndDisplayShipments);
+    optimizeBtn.addEventListener('click', calculateOptimalRoutes);
+    exportOptimizationBtn.addEventListener('click', exportOptimizedRoutesToExcel);
+
+    checkSession();
+});
+</script>
+
+</body>
+</html>
