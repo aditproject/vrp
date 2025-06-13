@@ -1,2 +1,0 @@
-# vrp
-vrp untuk pengiriman
