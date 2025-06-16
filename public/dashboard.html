@@ -1,4 +1,4 @@
-!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
@@ -21,7 +21,7 @@
         <header class="text-center mb-8">
             <div class="flex justify-between items-center">
                 <h1 id="welcome-message" class="text-xl font-semibold text-left">Memuat...</h1>
-                <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Dasbor Optimasi Pengiriman NEW</h1>
+                <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Dasbor Optimasi Pengiriman</h1>
                 <button id="logout-btn" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded text-sm">Logout</button>
             </div>
         </header>
@@ -241,9 +241,21 @@ document.addEventListener('DOMContentLoaded', function () {
                 <ol class="list-decimal list-inside mt-2 text-sm space-y-1">`;
             
             route.path_stops.forEach(stop => {
-                let stopName = stop.is_depot ? `<b>${stop.point_name}</b>` : `${stop.point_name}`;
-                routeDetailsHtml += `<li>${stopName}</li>`;
+                let stopName = stop.is_depot ? `<b>${stop.point_name}</b>` : stop.point_name;
+                
+                let navigationButton = '';
+                if (!stop.is_depot) {
+                    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${stop.lat},${stop.lon}`;
+                    navigationButton = `
+                        <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" 
+                           class="inline-block bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-1 px-2 rounded ml-2 align-middle">
+                           Navigasi
+                        </a>`;
+                }
+                
+                routeDetailsHtml += `<li>${stopName}${navigationButton}</li>`;
             });
+
             routeDetailsHtml += `</ol>`;
             routeCard.innerHTML = routeDetailsHtml;
             optimizedRoutesContainer.appendChild(routeCard);
@@ -252,21 +264,39 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    // --- PERBAIKAN DI SINI: FUNGSI DENGAN PENANGANAN ERROR YANG LEBIH BAIK ---
     async function fetchRouteShape(stops, color) {
         const orsCoordinates = stops.map(stop => [stop.lon, stop.lat]);
         if (orsCoordinates.length < 2) return;
         try {
             const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
                 method: 'POST',
-                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Authorization': orsApiKey },
+                headers: { 
+                    'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+                    'Content-Type': 'application/json', 
+                    'Authorization': orsApiKey 
+                },
                 body: JSON.stringify({ coordinates: orsCoordinates })
             });
-            if (!response.ok) return;
-            const data = await response.json();
-            const leafletPath = data.features[0].geometry.coordinates.map(p => [p[1], p[0]]);
-            L.polyline(leafletPath, { color, weight: 5, opacity: 0.8 }).addTo(routesLayer);
+            
+            const data = await response.json(); // Selalu coba dapatkan body JSON untuk pesan error
+
+            if (response.ok) {
+                if (data.features && data.features.length > 0) {
+                    const leafletPath = data.features[0].geometry.coordinates.map(p => [p[1], p[0]]);
+                    L.polyline(leafletPath, { color, weight: 5, opacity: 0.8 }).addTo(routesLayer);
+                } else {
+                     showError('API Peta tidak mengembalikan rute yang valid.');
+                }
+            } else {
+                // Jika gagal, tampilkan pesan error dari API
+                const errorMessageText = data.error?.message || `Gagal menggambar rute di peta (Error ${response.status}).`;
+                showError(`API Peta Error: ${errorMessageText}`);
+                console.error('ORS Directions API Error:', data);
+            }
         } catch (error) {
             console.error('ORS fetch shape error:', error);
+            showError('Gagal terhubung ke layanan peta untuk menggambar rute.');
         }
     }
     
@@ -285,7 +315,10 @@ document.addEventListener('DOMContentLoaded', function () {
         errorMessage.classList.add('hidden');
     }
     function showSpinner(show) { spinner.style.display = show ? 'flex' : 'none'; }
-    function showError(message) { errorMessage.textContent = message; errorMessage.classList.remove('hidden'); }
+    function showError(message) { 
+        errorMessage.textContent = message; 
+        errorMessage.classList.remove('hidden'); 
+    }
     
     function exportOptimizedRoutesToExcel() {
         if (!lastSolution || !lastSolution.routes || lastSolution.routes.length === 0) return alert("Tidak ada data untuk di-export.");
